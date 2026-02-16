@@ -242,8 +242,24 @@ function TeamLapAnalysis({
     return acc;
   }, {} as Record<number, Lap[]>);
 
-  // Create position graph data - calculate position based on lap times
+  // Create position graph data - calculate actual race position based on cumulative time
+  // In endurance racing, position = who completed the most laps with the lowest total time
   const maxLapNum = teamLaps.length > 0 ? Math.max(...teamLaps.map(l => l.lapNumber)) : 0;
+
+  // Build cumulative time map for ALL cars: startNumber -> lapNumber -> cumulativeTime
+  const allStartNumbers = Array.from(new Set(laps.map(l => l.startNumber)));
+  const cumulativeMap = new Map<number, Map<number, number>>();
+  for (const sn of allStartNumbers) {
+    const snLaps = laps.filter(l => l.startNumber === sn).sort((a, b) => a.lapNumber - b.lapNumber);
+    const lapCumMap = new Map<number, number>();
+    let cumTime = 0;
+    for (const lap of snLaps) {
+      cumTime += lap.lapTime;
+      lapCumMap.set(lap.lapNumber, cumTime);
+    }
+    cumulativeMap.set(sn, lapCumMap);
+  }
+
   const positionData = Array.from({ length: maxLapNum }, (_, i) => {
     const lapNum = i + 1;
     const teamLapForNum = teamLaps.find(l => l.lapNumber === lapNum);
@@ -251,22 +267,38 @@ function TeamLapAnalysis({
     if (!teamLapForNum) {
       return null;
     }
-    
-    // Find all teams' lap times for this lap number
-    const allLapTimesForThisLap = laps
-      .filter(l => l.lapNumber === lapNum)
-      .sort((a, b) => a.lapTime - b.lapTime);
-    
-    // Find position of our team
-    const position = allLapTimesForThisLap.findIndex(l => l.startNumber === teamResult.startNumber) + 1;
+
+    // Rank all cars at this lap number:
+    // 1) Cars with MORE completed laps rank higher
+    // 2) Among cars on the same lap count, lower cumulative time ranks higher
+    const rankings: { startNumber: number; lapsCompleted: number; cumTime: number }[] = [];
+    for (const sn of allStartNumbers) {
+      const snCum = cumulativeMap.get(sn);
+      if (!snCum) continue;
+      // How many laps has this car completed up to lapNum?
+      const completedLaps = snCum.has(lapNum) ? lapNum : 
+        Array.from(snCum.keys()).filter(k => k <= lapNum).length;
+      if (completedLaps === 0) continue;
+      const maxCompletedLap = Math.max(...Array.from(snCum.keys()).filter(k => k <= lapNum));
+      const cumTime = snCum.get(maxCompletedLap) || 0;
+      rankings.push({ startNumber: sn, lapsCompleted: completedLaps, cumTime });
+    }
+
+    // Sort: more laps first, then lower cumulative time
+    rankings.sort((a, b) => {
+      if (b.lapsCompleted !== a.lapsCompleted) return b.lapsCompleted - a.lapsCompleted;
+      return a.cumTime - b.cumTime;
+    });
+
+    const position = rankings.findIndex(r => r.startNumber === teamResult.startNumber) + 1;
     
     return {
       lap: lapNum,
-      position: position,
+      position: position > 0 ? position : null,
       lapTime: teamLapForNum.lapTime,
       driverName: teamLapForNum.driver ? `${teamLapForNum.driver.firstName} ${teamLapForNum.driver.lastName}` : 'Unknown'
     };
-  }).filter((d): d is { lap: number; position: number; lapTime: number; driverName: string } => d !== null);
+  }).filter((d): d is { lap: number; position: number; lapTime: number; driverName: string } => d !== null && d.position !== null);
 
   // Debug log
   if (positionData.length > 0) {

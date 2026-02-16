@@ -64,8 +64,30 @@ interface DriverInfo {
   nationality: string | null;
 }
 
+/**
+ * Strips leading/trailing double quotes and single quotes from a value.
+ * Handles patterns like: "Van Der Sanden", "'Jimmy Broadbent'", 'Sub7BTG'
+ */
+function cleanValue(val: string | undefined): string {
+  if (!val) return '';
+  let cleaned = val.trim();
+  // Strip outer double quotes
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    cleaned = cleaned.slice(1, -1).trim();
+  } else if (cleaned.startsWith('"')) {
+    cleaned = cleaned.slice(1).trim();
+  } else if (cleaned.endsWith('"')) {
+    cleaned = cleaned.slice(0, -1).trim();
+  }
+  // Strip outer single quotes
+  if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  return cleaned;
+}
+
 function resolveTeamName(row: CSVRow, startNumber: number): string {
-  const rawTeam = row.BEWERBER?.trim();
+  const rawTeam = cleanValue(row.BEWERBER);
   if (rawTeam && !/^\d+$/.test(rawTeam)) {
     return rawTeam;
   }
@@ -99,9 +121,23 @@ async function findOrCreateDriver(driverInfo: DriverInfo, startNumber: number) {
 
 function getDriverInfo(row: CSVRow, index: number): DriverInfo {
   const idx = Math.max(1, Math.min(8, index));
-  const lastName = row[`FAHRER${idx}_NAME`]?.trim() || 'Unknown';
-  const firstName = row[`FAHRER${idx}_VORNAME`]?.trim() || 'Unknown';
-  const nationality = row[`FAHRER${idx}_NATION`]?.trim() || null;
+  let lastName = cleanValue(row[`FAHRER${idx}_NAME`]) || 'Unknown';
+  let firstName = cleanValue(row[`FAHRER${idx}_VORNAME`]) || '';
+  const nationality = cleanValue(row[`FAHRER${idx}_NATION`]) || null;
+
+  // Handle full name in the NAME field (e.g., "Jimmy Broadbent" with empty VORNAME)
+  if (!firstName && lastName !== 'Unknown') {
+    const parts = lastName.split(/\s+/);
+    if (parts.length >= 2) {
+      // First word(s) = firstName, last word = lastName
+      firstName = parts.slice(0, -1).join(' ');
+      lastName = parts[parts.length - 1];
+    } else {
+      firstName = 'Unknown';
+    }
+  } else if (!firstName) {
+    firstName = 'Unknown';
+  }
 
   return {
     firstName,
@@ -112,9 +148,9 @@ function getDriverInfo(row: CSVRow, index: number): DriverInfo {
 
 function getVehicleClass(row: CSVRow): string {
   return (
-    row.KLASSE?.trim() ||
-    row.KLASSEKURZ?.trim() ||
-    row.UNTERKLASSE?.trim() ||
+    cleanValue(row.KLASSE) ||
+    cleanValue(row.KLASSEKURZ) ||
+    cleanValue(row.UNTERKLASSE) ||
     'Unknown'
   );
 }
@@ -134,12 +170,19 @@ function parsePitDuration(durationStr?: string): number {
     return 0;
   }
 
-  const normalized = durationStr.replace(',', '.').trim();
+  const normalized = cleanValue(durationStr).replace(',', '.').trim();
   if (!normalized) {
     return 0;
   }
 
   return parseTime(normalized) || 0;
+}
+
+function parseSectorValue(val: string | undefined): number | null {
+  const cleaned = cleanValue(val);
+  if (!cleaned) return null;
+  const num = parseFloat(cleaned.replace(',', '.'));
+  return isNaN(num) ? null : num;
 }
 
 function parseCSV(filePath: string): CSVRow[] {
@@ -149,7 +192,7 @@ function parseCSV(filePath: string): CSVRow[] {
     skip_empty_lines: true,
     delimiter: ';',
     relax_column_count: true,
-    relax_quotes: true
+    quote: false
   });
 }
 
@@ -253,7 +296,8 @@ async function processNLSFolder(folderName: string, folderPath: string) {
       const driverInfo = getDriverInfo(row, 1);
       const startNumber = parseInt(row.STNR) || 0;
       
-      if (!row.STNR || !row.FAHRZEUG || startNumber === 0) {
+      const fahrzeug = cleanValue(row.FAHRZEUG);
+      if (!row.STNR || !fahrzeug || startNumber === 0) {
         continue;
       }
 
@@ -267,11 +311,11 @@ async function processNLSFolder(folderName: string, folderPath: string) {
       });
 
       const vehicle = await prisma.vehicle.upsert({
-        where: { id: `${team.id}_${row.FAHRZEUG?.trim()}` },
+        where: { id: `${team.id}_${fahrzeug}` },
         update: {},
         create: {
-          model: row.FAHRZEUG?.trim() || 'Unknown',
-          vehicleClass: row.KLASSE?.trim() || 'Unknown',
+          model: fahrzeug || 'Unknown',
+          vehicleClass: cleanValue(row.KLASSE) || 'Unknown',
           teamId: team.id
         }
       });
@@ -282,11 +326,11 @@ async function processNLSFolder(folderName: string, folderPath: string) {
           startNumber: startNumber,
           position: parseInt(row.RANG) || null,
           laps: parseInt(row.RUNDEN) || null,
-          bestLapTime: parseTime(row['SCHNELLSTE RUNDE'] || '0'),
-          totalTime: parseTime(row.GESAMTZEIT) || null,
-          gap: row.GAP || null,
-          interval: row.KLASSENGAP || null,
-          status: row.STATUS?.trim() || null,
+          bestLapTime: parseTime(cleanValue(row['SCHNELLSTE RUNDE']) || '0'),
+          totalTime: parseTime(cleanValue(row.GESAMTZEIT)) || null,
+          gap: cleanValue(row.GAP) || null,
+          interval: cleanValue(row.KLASSENGAP) || null,
+          status: cleanValue(row.STATUS) || null,
           driverId: driver.id,
           teamId: team.id,
           vehicleId: vehicle.id
@@ -307,7 +351,8 @@ async function processNLSFolder(folderName: string, folderPath: string) {
       const driverInfo = getDriverInfo(row, 1);
       const startNumber = parseInt(row.STNR) || 0;
       
-      if (!row.STNR || !row.FAHRZEUG || startNumber === 0) {
+      const fahrzeug = cleanValue(row.FAHRZEUG);
+      if (!row.STNR || !fahrzeug || startNumber === 0) {
         continue;
       }
 
@@ -321,11 +366,11 @@ async function processNLSFolder(folderName: string, folderPath: string) {
       });
 
       const vehicle = await prisma.vehicle.upsert({
-        where: { id: `${team.id}_${row.FAHRZEUG?.trim()}` },
+        where: { id: `${team.id}_${fahrzeug}` },
         update: {},
         create: {
-          model: row.FAHRZEUG?.trim() || 'Unknown',
-          vehicleClass: row.KLASSE?.trim() || 'Unknown',
+          model: fahrzeug || 'Unknown',
+          vehicleClass: cleanValue(row.KLASSE) || 'Unknown',
           teamId: team.id
         }
       });
@@ -336,11 +381,11 @@ async function processNLSFolder(folderName: string, folderPath: string) {
           startNumber: startNumber,
           position: parseInt(row.RANG) || null,
           laps: parseInt(row.RUNDEN) || null,
-          bestLapTime: parseTime(row['SCHNELLSTE RUNDE'] || '0'),
-          totalTime: parseTime(row.GESAMTZEIT) || null,
-          gap: row.GAP || null,
-          interval: row.KLASSENGAP || null,
-          status: row.STATUS?.trim() || null,
+          bestLapTime: parseTime(cleanValue(row['SCHNELLSTE RUNDE']) || '0'),
+          totalTime: parseTime(cleanValue(row.GESAMTZEIT)) || null,
+          gap: cleanValue(row.GAP) || null,
+          interval: cleanValue(row.KLASSENGAP) || null,
+          status: cleanValue(row.STATUS) || null,
           driverId: driver.id,
           teamId: team.id,
           vehicleId: vehicle.id
@@ -377,7 +422,7 @@ async function processNLSFolder(folderName: string, folderPath: string) {
             create: { name: teamName }
           });
 
-          const model = row.FAHRZEUG?.trim() || 'Unknown';
+          const model = cleanValue(row.FAHRZEUG) || 'Unknown';
           const vehicle = await prisma.vehicle.upsert({
             where: { id: `${team.id}_${model}` },
             update: {},
@@ -394,7 +439,7 @@ async function processNLSFolder(folderName: string, folderPath: string) {
               sessionId: qualiSession.id,
               startNumber,
               lapNumber: parseInt(row.RUNDE_NR || row.RUNDE) || 0,
-              lapTime: parseFloat(row.RUNDENZEIT_SEKUNDEN?.replace(',', '.')) || 0,
+              lapTime: parseFloat(cleanValue(row.RUNDENZEIT_SEKUNDEN)?.replace(',', '.')) || 0,
               driverId: driver.id,
               vehicleId: vehicleId
             }
@@ -427,7 +472,7 @@ async function processNLSFolder(folderName: string, folderPath: string) {
             create: { name: teamName }
           });
 
-          const model = row.FAHRZEUG?.trim() || 'Unknown';
+          const model = cleanValue(row.FAHRZEUG) || 'Unknown';
           const vehicle = await prisma.vehicle.upsert({
             where: { id: `${team.id}_${model}` },
             update: {},
@@ -444,7 +489,7 @@ async function processNLSFolder(folderName: string, folderPath: string) {
               sessionId: raceSession.id,
               startNumber,
               lapNumber: parseInt(row.RUNDE) || 0,
-              lapTime: parseFloat(row.RUNDENZEIT_SEKUNDEN?.replace(',', '.')) || 0,
+              lapTime: parseFloat(cleanValue(row.RUNDENZEIT_SEKUNDEN)?.replace(',', '.')) || 0,
               driverId: driver.id,
               vehicleId: vehicleId
             }
@@ -482,7 +527,7 @@ async function processNLSFolder(folderName: string, folderPath: string) {
             create: { name: teamName }
           });
 
-          const model = row.FAHRZEUG?.trim() || 'Unknown';
+          const model = cleanValue(row.FAHRZEUG) || 'Unknown';
           const vehicle = await prisma.vehicle.upsert({
             where: { id: `${team.id}_${model}` },
             update: {},
@@ -499,22 +544,22 @@ async function processNLSFolder(folderName: string, folderPath: string) {
               sessionId: qualiSession.id,
               startNumber,
               lapNumber: parseInt(row.RUNDE) || 0,
-              sector1: row.SEKTOR_1 ? parseFloat(row.SEKTOR_1.replace(',', '.')) : null,
-              sector2: row.SEKTOR_2 ? parseFloat(row.SEKTOR_2.replace(',', '.')) : null,
-              sector3: row.SEKTOR_3 ? parseFloat(row.SEKTOR_3.replace(',', '.')) : null,
-              sector4: row.SEKTOR_4 ? parseFloat(row.SEKTOR_4.replace(',', '.')) : null,
-              sector5: row.SEKTOR_5 ? parseFloat(row.SEKTOR_5.replace(',', '.')) : null,
+              sector1: parseSectorValue(row.SEKTOR_1),
+              sector2: parseSectorValue(row.SEKTOR_2),
+              sector3: parseSectorValue(row.SEKTOR_3),
+              sector4: parseSectorValue(row.SEKTOR_4),
+              sector5: parseSectorValue(row.SEKTOR_5),
               driverId: driver.id,
               vehicleId: vehicleId
             }
           });
           count++;
 
-          const inPit = (row.INPIT || '').toUpperCase() === 'J';
+          const inPit = cleanValue(row.INPIT).toUpperCase() === 'J';
           const pitDuration = parsePitDuration(row.PITSTOPDURATION);
           const lapNumber = parseInt(row.RUNDE_NR || row.RUNDE) || 0;
 
-          if (inPit || pitDuration > 0) {
+          if (inPit && pitDuration > 0) {
             const existingPit = await prisma.pitStop.findFirst({
               where: {
                 sessionId: qualiSession.id,
@@ -562,7 +607,7 @@ async function processNLSFolder(folderName: string, folderPath: string) {
             create: { name: teamName }
           });
 
-          const model = row.FAHRZEUG?.trim() || 'Unknown';
+          const model = cleanValue(row.FAHRZEUG) || 'Unknown';
           const vehicle = await prisma.vehicle.upsert({
             where: { id: `${team.id}_${model}` },
             update: {},
@@ -579,22 +624,22 @@ async function processNLSFolder(folderName: string, folderPath: string) {
               sessionId: raceSession.id,
               startNumber,
               lapNumber: parseInt(row.RUNDE_NR || row.RUNDE) || 0,
-              sector1: row.SEKTOR_1 ? parseFloat(row.SEKTOR_1.replace(',', '.')) : null,
-              sector2: row.SEKTOR_2 ? parseFloat(row.SEKTOR_2.replace(',', '.')) : null,
-              sector3: row.SEKTOR_3 ? parseFloat(row.SEKTOR_3.replace(',', '.')) : null,
-              sector4: row.SEKTOR_4 ? parseFloat(row.SEKTOR_4.replace(',', '.')) : null,
-              sector5: row.SEKTOR_5 ? parseFloat(row.SEKTOR_5.replace(',', '.')) : null,
+              sector1: parseSectorValue(row.SEKTOR_1),
+              sector2: parseSectorValue(row.SEKTOR_2),
+              sector3: parseSectorValue(row.SEKTOR_3),
+              sector4: parseSectorValue(row.SEKTOR_4),
+              sector5: parseSectorValue(row.SEKTOR_5),
               driverId: driver.id,
               vehicleId: vehicleId
             }
           });
           count++;
 
-          const inPit = (row.INPIT || '').toUpperCase() === 'J';
+          const inPit = cleanValue(row.INPIT).toUpperCase() === 'J';
           const pitDuration = parsePitDuration(row.PITSTOPDURATION);
           const lapNumber = parseInt(row.RUNDE_NR || row.RUNDE) || 0;
 
-          if (inPit || pitDuration > 0) {
+          if (inPit && pitDuration > 0) {
             const existingPit = await prisma.pitStop.findFirst({
               where: {
                 sessionId: raceSession.id,

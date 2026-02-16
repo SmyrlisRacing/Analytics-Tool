@@ -44,9 +44,9 @@ COPY --from=builder /app/dist ./dist
 # Copy CSV data structure
 COPY backend/data_2025 ./data_2025
 
-# Copy entrypoint and make executable
+# Copy entrypoint, convert line endings to LF, and make executable
 COPY backend/entrypoint.sh ./
-RUN chmod +x entrypoint.sh
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 
 # Expose port
 EXPOSE 4000

@@ -53,21 +53,32 @@ router.get('/:id/results', async (req, res): Promise<void> => {
       where: { sessionId: req.params.id }
     });
 
-    // Find max lap number
-    const maxLap = laps.length > 0 ? Math.max(...laps.map(l => l.lapNumber)) : 0;
-
-    // Calculate final position based on last lap times for each start number
+    // Calculate final race positions based on cumulative time
+    // Position = most laps completed, then lowest cumulative time
     const finalPositions = new Map<number, number>();
     
-    if (maxLap > 0) {
-      // Get the lap times for each team on the last lap
-      const lastLapTimes = laps
-        .filter(l => l.lapNumber === maxLap)
-        .sort((a, b) => a.lapTime - b.lapTime)
-        .map((l, index) => ({ startNumber: l.startNumber, position: index + 1 }));
+    if (laps.length > 0) {
+      // Build cumulative times per startNumber
+      const startNumbers = Array.from(new Set(laps.map(l => l.startNumber)));
+      const carStats: { startNumber: number; lapsCompleted: number; cumTime: number }[] = [];
       
-      lastLapTimes.forEach(({ startNumber, position }) => {
-        finalPositions.set(startNumber, position);
+      for (const sn of startNumbers) {
+        const snLaps = laps.filter(l => l.startNumber === sn).sort((a, b) => a.lapNumber - b.lapNumber);
+        let cumTime = 0;
+        for (const lap of snLaps) {
+          cumTime += lap.lapTime;
+        }
+        carStats.push({ startNumber: sn, lapsCompleted: snLaps.length, cumTime });
+      }
+      
+      // Sort: more laps first, then lower cumulative time
+      carStats.sort((a, b) => {
+        if (b.lapsCompleted !== a.lapsCompleted) return b.lapsCompleted - a.lapsCompleted;
+        return a.cumTime - b.cumTime;
+      });
+      
+      carStats.forEach((car, index) => {
+        finalPositions.set(car.startNumber, index + 1);
       });
     }
 
