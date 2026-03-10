@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { sessionsApi, weatherApi, Session, Result, Lap, SectorTime, WeatherData } from '../api';
 
 function SessionDetails() {
@@ -10,8 +10,9 @@ function SessionDetails() {
   const [laps, setLaps] = useState<Lap[]>([]);
   const [sectors, setSectors] = useState<SectorTime[]>([]);
   const [weather, setWeather] = useState<WeatherData | null>(null);
-  const [activeTab, setActiveTab] = useState<'results' | 'analysis'>('results');
+  const [activeTab, setActiveTab] = useState<'results' | 'analysis' | 'comparison'>('results');
   const [selectedTeam, setSelectedTeam] = useState<string | null>(null);
+  const [compareTeamId, setCompareTeamId] = useState<string | null>(null);
   const [expandedLap, setExpandedLap] = useState<number | null>(null);
   const [classFilter, setClassFilter] = useState<string>('all');
   const [loading, setLoading] = useState(true);
@@ -83,6 +84,13 @@ function SessionDetails() {
           onClick={() => setActiveTab('analysis')}
         >
           Team Analysis
+        </button>
+        <button
+          className={`tab ${activeTab === 'comparison' ? 'active' : ''}`}
+          onClick={() => setActiveTab('comparison')}
+          style={{ opacity: compareTeamId ? 1 : 0.5 }}
+        >
+          Vergleich {compareTeamId ? '⚖' : ''}
         </button>
       </div>
 
@@ -178,7 +186,7 @@ function SessionDetails() {
       {activeTab === 'analysis' && (
         <div className="card">
           {selectedTeam ? (
-            <TeamLapAnalysis 
+            <TeamLapAnalysis
               teamId={selectedTeam}
               laps={laps}
               sectors={sectors}
@@ -188,10 +196,34 @@ function SessionDetails() {
               setExpandedLap={setExpandedLap}
               sessionType={session.type}
               weather={weather}
+              onCompare={() => {
+                setCompareTeamId(selectedTeam);
+                setActiveTab('comparison');
+              }}
             />
           ) : (
             <p style={{ textAlign: 'center', color: '#888' }}>
               Select a team from the Results tab to view lap analysis
+            </p>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'comparison' && (
+        <div className="card">
+          {compareTeamId ? (
+            <TeamComparison
+              teamIdA={compareTeamId}
+              results={results}
+              laps={laps}
+              sectors={sectors}
+              formatTime={formatTime}
+              weather={weather}
+              sessionType={session.type}
+            />
+          ) : (
+            <p style={{ textAlign: 'center', color: '#888' }}>
+              Klicke auf "⚖ Vergleich" in einem Team-Eintrag um den Vergleich zu starten
             </p>
           )}
         </div>
@@ -211,17 +243,19 @@ interface TeamLapAnalysisProps {
   setExpandedLap: (lapNumber: number | null) => void;
   sessionType: string;
   weather: WeatherData | null;
+  onCompare: () => void;
 }
 
-function TeamLapAnalysis({ 
-  teamId, 
-  laps, 
+function TeamLapAnalysis({
+  teamId,
+  laps,
   sectors,
-  results, 
+  results,
   formatTime,
   expandedLap,
   setExpandedLap,
-  weather
+  weather,
+  onCompare
 }: TeamLapAnalysisProps) {
   const teamResult = results.find(r => r.team.id === teamId);
   
@@ -397,9 +431,17 @@ function TeamLapAnalysis({
 
   return (
     <div>
-      <h3 style={{ marginBottom: '1rem' }}>
-        {teamResult.team.name} - Position #{finalPosition}
-      </h3>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+        <h3 style={{ margin: 0 }}>
+          {teamResult.team.name} - Position #{finalPosition}
+        </h3>
+        <button
+          onClick={onCompare}
+          style={{ padding: '6px 14px', cursor: 'pointer', fontSize: '13px', backgroundColor: '#8e44ad', color: 'white', border: 'none', borderRadius: '6px', whiteSpace: 'nowrap' }}
+        >
+          ⚖ Vergleich
+        </button>
+      </div>
 
       {/* Position Trend */}
       {positionData.length > 0 && (
@@ -638,6 +680,323 @@ function TeamLapAnalysis({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ─── TeamComparison Component ────────────────────────────────────────────────
+
+interface TeamComparisonProps {
+  teamIdA: string;
+  results: Result[];
+  laps: Lap[];
+  sectors: SectorTime[];
+  formatTime: (s: number | null | undefined) => string;
+  weather: WeatherData | null;
+  sessionType: string;
+}
+
+function calcStints(carLaps: Lap[]): Lap[][] {
+  const sorted = [...carLaps].sort((a, b) => a.lapNumber - b.lapNumber);
+  const stints: Lap[][] = [];
+  let current: Lap[] = [];
+  for (const lap of sorted) {
+    current.push(lap);
+    if (lap.inPit) {
+      stints.push(current);
+      current = [];
+    }
+  }
+  if (current.length > 0) stints.push(current);
+  return stints;
+}
+
+function TeamComparison({ teamIdA, results, laps, formatTime }: TeamComparisonProps) {
+  const [teamIdB, setTeamIdB] = useState<string | null>(null);
+  const [showAllClasses, setShowAllClasses] = useState(false);
+  const [selectedStintA, setSelectedStintA] = useState(0);
+  const [selectedStintB, setSelectedStintB] = useState(0);
+
+  const teamA = results.find(r => r.team.id === teamIdA);
+  if (!teamA) return <p>Team nicht gefunden</p>;
+
+  const classA = teamA.vehicle?.vehicleClass;
+
+  const availableForB = showAllClasses
+    ? results.filter(r => r.team.id !== teamIdA)
+    : results.filter(r => r.team.id !== teamIdA && r.vehicle?.vehicleClass === classA);
+
+  const teamB = teamIdB ? results.find(r => r.team.id === teamIdB) : null;
+
+  const lapsA = laps.filter(l => l.startNumber === teamA.startNumber).sort((a, b) => a.lapNumber - b.lapNumber);
+  const lapsB = teamB ? laps.filter(l => l.startNumber === teamB.startNumber).sort((a, b) => a.lapNumber - b.lapNumber) : [];
+
+  const stintsA = calcStints(lapsA);
+  const stintsB = calcStints(lapsB);
+
+  // ── Rundenzeiten Chart Data ──────────────────────────────────────────────
+  const allLapNums = Array.from(new Set([...lapsA.map(l => l.lapNumber), ...lapsB.map(l => l.lapNumber)])).sort((a, b) => a - b);
+  const lapChartData = allLapNums.map(lapNum => ({
+    lap: lapNum,
+    A: lapsA.find(l => l.lapNumber === lapNum)?.lapTime ?? null,
+    B: lapsB.find(l => l.lapNumber === lapNum)?.lapTime ?? null,
+  }));
+
+  // ── Stats ──────────────────────────────────────────────────────────────
+  const calcStats = (lapList: Lap[]) => {
+    if (lapList.length === 0) return null;
+    const times = lapList.map(l => l.lapTime).sort((a, b) => a - b);
+    return {
+      best: times[0],
+      avg: times.reduce((s, t) => s + t, 0) / times.length,
+      worst: times[times.length - 1],
+      consistency: times[times.length - 1] - times[0],
+    };
+  };
+  const statsA = calcStats(lapsA);
+  const statsB = calcStats(lapsB);
+
+  // ── Stints Chart Data ──────────────────────────────────────────────────
+  const stintDataA = stintsA[selectedStintA] ?? [];
+  const stintDataB = stintsB[selectedStintB] ?? [];
+  const maxStintLen = Math.max(stintDataA.length, stintDataB.length);
+  const stintChartData = Array.from({ length: maxStintLen }, (_, i) => ({
+    stintLap: i + 1,
+    A: stintDataA[i]?.lapTime ?? null,
+    B: stintDataB[i]?.lapTime ?? null,
+  }));
+
+  const COLOR_A = '#3498db';
+  const COLOR_B = '#e74c3c';
+
+  const labelA = `#${teamA.startNumber} ${teamA.team.name}`;
+  const labelB = teamB ? `#${teamB.startNumber} ${teamB.team.name}` : 'Car B';
+
+  return (
+    <div>
+      {/* ── Header: Car A + Car B Auswahl ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
+        {/* Car A */}
+        <div style={{ padding: '1rem', border: `2px solid ${COLOR_A}`, borderRadius: '8px' }}>
+          <div style={{ fontSize: '0.75rem', color: COLOR_A, fontWeight: 'bold', marginBottom: '0.25rem' }}>AUTO A</div>
+          <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{teamA.team.name}</div>
+          <div style={{ color: '#888', fontSize: '0.875rem' }}>#{teamA.startNumber} · {teamA.vehicle?.model}</div>
+          <div style={{ color: '#aaa', fontSize: '0.8rem' }}>{classA}</div>
+        </div>
+
+        {/* Car B */}
+        <div style={{ padding: '1rem', border: `2px solid ${teamB ? COLOR_B : '#555'}`, borderRadius: '8px' }}>
+          <div style={{ fontSize: '0.75rem', color: COLOR_B, fontWeight: 'bold', marginBottom: '0.25rem' }}>AUTO B</div>
+          {teamB ? (
+            <>
+              <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{teamB.team.name}</div>
+              <div style={{ color: '#888', fontSize: '0.875rem' }}>#{teamB.startNumber} · {teamB.vehicle?.model}</div>
+              <div style={{ color: '#aaa', fontSize: '0.8rem' }}>{teamB.vehicle?.vehicleClass}</div>
+            </>
+          ) : (
+            <div style={{ color: '#888', fontSize: '0.875rem' }}>Noch kein Auto ausgewählt</div>
+          )}
+          <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <select
+              value={teamIdB ?? ''}
+              onChange={e => setTeamIdB(e.target.value || null)}
+              style={{ padding: '0.4rem', flex: 1, minWidth: 0 }}
+            >
+              <option value="">— Auto wählen —</option>
+              {availableForB
+                .sort((a, b) => a.startNumber - b.startNumber)
+                .map(r => (
+                  <option key={r.team.id} value={r.team.id}>
+                    #{r.startNumber} {r.team.name} ({r.vehicle?.vehicleClass})
+                  </option>
+                ))}
+            </select>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.5rem', fontSize: '0.8rem', cursor: 'pointer', color: '#aaa' }}>
+            <input
+              type="checkbox"
+              checked={showAllClasses}
+              onChange={e => { setShowAllClasses(e.target.checked); setTeamIdB(null); }}
+            />
+            Alle Klassen anzeigen
+          </label>
+        </div>
+      </div>
+
+      {!teamB && (
+        <p style={{ textAlign: 'center', color: '#888', marginBottom: '1rem' }}>
+          Wähle Auto B um den Vergleich zu starten.
+        </p>
+      )}
+
+      {teamB && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+
+          {/* ── TOP LEFT: Gesamtvergleich ── */}
+          <div style={{ padding: '1rem', backgroundColor: '#1a1a2e', borderRadius: '8px' }}>
+            <h4 style={{ marginTop: 0 }}>Gesamtvergleich — Rundenzeiten</h4>
+            <ResponsiveContainer width="100%" height={280}>
+              <LineChart data={lapChartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                <XAxis dataKey="lap" stroke="#888" label={{ value: 'Runde', position: 'insideBottomRight', offset: -5, fill: '#888' }} />
+                <YAxis stroke="#888" label={{ value: 'Zeit (s)', angle: -90, position: 'insideLeft', fill: '#888' }} />
+                <Tooltip
+                  formatter={(value: number, name: string) => [formatTime(value), name === 'A' ? labelA : labelB]}
+                  labelFormatter={(l) => `Runde ${l}`}
+                  contentStyle={{ backgroundColor: '#222', border: '1px solid #444' }}
+                />
+                <Legend formatter={(v) => v === 'A' ? labelA : labelB} />
+                <Line type="monotone" dataKey="A" stroke={COLOR_A} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={false} />
+                <Line type="monotone" dataKey="B" stroke={COLOR_B} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* ── TOP RIGHT: Boxenstopps ── */}
+          {(() => {
+            const pitStopsA = lapsA.filter(l => l.inPit === true);
+            const pitStopsB = lapsB.filter(l => l.inPit === true);
+            const maxRows = Math.max(pitStopsA.length, pitStopsB.length);
+            return (
+              <div style={{ padding: '1rem', backgroundColor: '#1a1a2e', borderRadius: '8px' }}>
+                <h4 style={{ marginTop: 0 }}>Boxenstopps</h4>
+                {maxRows === 0 ? (
+                  <p style={{ color: '#888', textAlign: 'center' }}>Keine Boxenstoppdaten verfügbar.</p>
+                ) : (
+                  <table style={{ width: '100%' }}>
+                    <thead>
+                      <tr>
+                        <th>Stop</th>
+                        <th style={{ color: COLOR_A }}>Runde (A)</th>
+                        <th style={{ color: COLOR_A }}>Zeit (A)</th>
+                        <th style={{ color: COLOR_B }}>Runde (B)</th>
+                        <th style={{ color: COLOR_B }}>Zeit (B)</th>
+                        <th>Delta</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.from({ length: maxRows }, (_, i) => {
+                        const pA = pitStopsA[i];
+                        const pB = pitStopsB[i];
+                        const durA = pA?.pitDuration ?? null;
+                        const durB = pB?.pitDuration ?? null;
+                        const delta = durA != null && durB != null ? durA - durB : null;
+                        return (
+                          <tr key={i}>
+                            <td style={{ color: '#aaa', fontWeight: 'bold' }}>Stop {i + 1}</td>
+                            <td style={{ color: COLOR_A }}>{pA ? `R${pA.lapNumber}` : '—'}</td>
+                            <td style={{ color: COLOR_A }}>{durA != null ? formatTime(durA) : '—'}</td>
+                            <td style={{ color: COLOR_B }}>{pB ? `R${pB.lapNumber}` : '—'}</td>
+                            <td style={{ color: COLOR_B }}>{durB != null ? formatTime(durB) : '—'}</td>
+                            <td style={{ color: delta == null ? '#888' : delta < 0 ? '#2ecc71' : delta > 0 ? '#e74c3c' : '#888', fontWeight: 'bold' }}>
+                              {delta != null ? (delta >= 0 ? '+' : '') + delta.toFixed(3) + 's' : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {(() => {
+                        const totalA = pitStopsA.reduce((sum, l) => sum + (l.pitDuration ?? 0), 0);
+                        const totalB = pitStopsB.reduce((sum, l) => sum + (l.pitDuration ?? 0), 0);
+                        const hasA = pitStopsA.some(l => l.pitDuration != null);
+                        const hasB = pitStopsB.some(l => l.pitDuration != null);
+                        const totalDelta = hasA && hasB ? totalA - totalB : null;
+                        return (
+                          <tr style={{ borderTop: '2px solid #555' }}>
+                            <td style={{ color: '#fff', fontWeight: 'bold' }}>Gesamt</td>
+                            <td style={{ color: COLOR_A }}>{pitStopsA.length} Stops</td>
+                            <td style={{ color: COLOR_A, fontWeight: 'bold' }}>{hasA ? formatTime(totalA) : '—'}</td>
+                            <td style={{ color: COLOR_B }}>{pitStopsB.length} Stops</td>
+                            <td style={{ color: COLOR_B, fontWeight: 'bold' }}>{hasB ? formatTime(totalB) : '—'}</td>
+                            <td style={{ color: totalDelta == null ? '#888' : totalDelta < 0 ? '#2ecc71' : totalDelta > 0 ? '#e74c3c' : '#888', fontWeight: 'bold', fontSize: '1.05em' }}>
+                              {totalDelta != null ? (totalDelta >= 0 ? '+' : '') + totalDelta.toFixed(3) + 's' : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })()}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── BOTTOM LEFT: Stint Vergleich ── */}
+          <div style={{ padding: '1rem', backgroundColor: '#1a1a2e', borderRadius: '8px' }}>
+            <h4 style={{ marginTop: 0 }}>Stint Vergleich</h4>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+              <div>
+                <label style={{ display: 'block', color: COLOR_A, fontSize: '0.8rem', marginBottom: '0.25rem' }}>{labelA} — Stint</label>
+                <select value={selectedStintA} onChange={e => setSelectedStintA(Number(e.target.value))} style={{ padding: '0.4rem', width: '100%' }}>
+                  {stintsA.map((_, i) => (
+                    <option key={i} value={i}>Stint {i + 1} ({stintsA[i].length} Runden, R{stintsA[i][0]?.lapNumber}–R{stintsA[i][stintsA[i].length - 1]?.lapNumber})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ display: 'block', color: COLOR_B, fontSize: '0.8rem', marginBottom: '0.25rem' }}>{labelB} — Stint</label>
+                <select value={selectedStintB} onChange={e => setSelectedStintB(Number(e.target.value))} style={{ padding: '0.4rem', width: '100%' }}>
+                  {stintsB.map((_, i) => (
+                    <option key={i} value={i}>Stint {i + 1} ({stintsB[i].length} Runden, R{stintsB[i][0]?.lapNumber}–R{stintsB[i][stintsB[i].length - 1]?.lapNumber})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={stintChartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                <XAxis dataKey="stintLap" stroke="#888" label={{ value: 'Stint-Runde', position: 'insideBottomRight', offset: -5, fill: '#888' }} />
+                <YAxis stroke="#888" label={{ value: 'Zeit (s)', angle: -90, position: 'insideLeft', fill: '#888' }} />
+                <Tooltip
+                  formatter={(value: number, name: string) => [formatTime(value), name === 'A' ? labelA : labelB]}
+                  labelFormatter={(l) => `Stint-Runde ${l}`}
+                  contentStyle={{ backgroundColor: '#222', border: '1px solid #444' }}
+                />
+                <Legend formatter={(v) => v === 'A' ? `${labelA} · Stint ${selectedStintA + 1}` : `${labelB} · Stint ${selectedStintB + 1}`} />
+                <Line type="monotone" dataKey="A" stroke={COLOR_A} strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} connectNulls={false} />
+                <Line type="monotone" dataKey="B" stroke={COLOR_B} strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} connectNulls={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* ── BOTTOM RIGHT: Statistiken ── */}
+          <div style={{ padding: '1rem', backgroundColor: '#1a1a2e', borderRadius: '8px' }}>
+            <h4 style={{ marginTop: 0 }}>Statistiken</h4>
+            <table style={{ width: '100%' }}>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th style={{ color: COLOR_A }}>{labelA}</th>
+                  <th style={{ color: COLOR_B }}>{labelB}</th>
+                  <th>Delta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { label: 'Beste Runde', keyName: 'best' as const },
+                  { label: 'Schnitt', keyName: 'avg' as const },
+                  { label: 'Schlechteste', keyName: 'worst' as const },
+                  { label: 'Konsistenz', keyName: 'consistency' as const },
+                ].map(({ label, keyName }) => {
+                  const vA = statsA?.[keyName];
+                  const vB = statsB?.[keyName];
+                  const delta = vA != null && vB != null ? vA - vB : null;
+                  return (
+                    <tr key={keyName}>
+                      <td style={{ color: '#aaa' }}>{label}</td>
+                      <td style={{ color: COLOR_A }}>{formatTime(vA)}</td>
+                      <td style={{ color: COLOR_B }}>{formatTime(vB)}</td>
+                      <td style={{ color: delta == null ? '#888' : delta < 0 ? '#2ecc71' : delta > 0 ? '#e74c3c' : '#888' }}>
+                        {delta != null ? (delta >= 0 ? '+' : '') + delta.toFixed(3) + 's' : '-'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+        </div>
+      )}
     </div>
   );
 }
